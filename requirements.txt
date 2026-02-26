@@ -1,0 +1,14 @@
+torch==2.11.0.dev20260206+rocm7.0
+transformers==4.57.3
+peft==0.18.0
+accelerate
+datasets
+sentencepiece
+protobuf
+fastapi
+uvicorn[standard]
+requests
+pydantic
+tqdm
+pandas
+numpy

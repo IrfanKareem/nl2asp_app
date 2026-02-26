@@ -13,10 +13,12 @@ Run:
 API at: http://0.0.0.0:8000
 """
 
+import json
 import logging
 import requests
 from pathlib import Path
 from contextlib import asynccontextmanager
+from collections import Counter
 
 import torch
 from fastapi import FastAPI, HTTPException
@@ -28,22 +30,25 @@ log = logging.getLogger(__name__)
 
 # ── Device detection — ROCm exposes itself as CUDA to PyTorch ─────────────────
 if torch.cuda.is_available():
-    DEVICE = "cuda"
-    DTYPE  = torch.float16
+    DEVICE   = "cuda"
+    DTYPE    = torch.float16
     gpu_name = torch.cuda.get_device_name(0)
     log.info(f"GPU detected: {gpu_name}")
 else:
-    DEVICE = "cpu"
-    DTYPE  = torch.float32
+    DEVICE   = "cpu"
+    DTYPE    = torch.float32
     log.warning("No GPU found — falling back to CPU.")
 
 log.info(f"Device: {DEVICE}  |  dtype: {DTYPE}")
 
-# ── Weight paths — these should already exist on your ROCm server ─────────────
-# Update these to the actual paths where you saved your fine-tuned weights
-LLAMA_ADAPTER_PATH = "./tuning_results/checkpoint-13638"   # your best checkpoint
+# ── Weight paths ───────────────────────────────────────────────────────────────
+LLAMA_ADAPTER_PATH = "./llamafinetune"
 T5_SMALL_PATH      = "./t5small_weights"
 BART_BASE_PATH     = "./bartbase_weights"
+
+# KFold T5-Small — contains fold_1 … fold_5 subdirectories
+KFOLD_T5_BASE_PATH = "./Kfold5_t5small"
+KFOLD_T5_FOLDS     = 5
 
 # ── CNL2ASP API ───────────────────────────────────────────────────────────────
 CNL2ASP_BASE    = "http://160.97.63.29:3003/api"
@@ -63,11 +68,30 @@ models: dict = {}
 
 
 def _try_load(key: str, loader):
+    import traceback
     try:
         models[key] = loader()
         log.info(f"✓  {key} loaded")
     except Exception as e:
         log.warning(f"✗  {key} skipped — {e}")
+        log.debug(traceback.format_exc())
+
+
+def _patch_tokenizer_config(path: str):
+    """
+    Transformers ≥ 4.47 regression: extra_special_tokens saved as a list []
+    causes AttributeError: 'list' object has no attribute 'keys' on load.
+    Patch tokenizer_config.json in-place to convert it to a dict {}.
+    Safe to call multiple times — only writes if the bug is present.
+    """
+    cfg_path = Path(path) / "tokenizer_config.json"
+    if not cfg_path.exists():
+        return
+    cfg = json.loads(cfg_path.read_text())
+    if isinstance(cfg.get("extra_special_tokens"), list):
+        log.info(f"Patching extra_special_tokens list→dict in {cfg_path}")
+        cfg["extra_special_tokens"] = {}
+        cfg_path.write_text(json.dumps(cfg, indent=2))
 
 
 def _load_llama():
@@ -81,14 +105,16 @@ def _load_llama():
     )
     model.eval()
     tokenizer = AutoTokenizer.from_pretrained(LLAMA_ADAPTER_PATH)
-    tokenizer.pad_token     = tokenizer.eos_token
-    tokenizer.padding_side  = "right"
+    tokenizer.pad_token    = tokenizer.eos_token
+    tokenizer.padding_side = "right"
     return {"model": model, "tokenizer": tokenizer, "type": "causal"}
 
 
 def _load_seq2seq(path: str):
     from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
     log.info(f"Loading seq2seq from {path} ...")
+    # Fix transformers >=4.47 tokenizer_config regression before loading
+    _patch_tokenizer_config(path)
     model = AutoModelForSeq2SeqLM.from_pretrained(
         path, torch_dtype=DTYPE
     ).to(DEVICE)
@@ -99,9 +125,9 @@ def _load_seq2seq(path: str):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Load T5 and BART first (lighter)
+    # ── Original single-weight models ─────────────────────────────────────────
     if Path(T5_SMALL_PATH).exists():
-        _try_load("t5small",  lambda: _load_seq2seq(T5_SMALL_PATH))
+        _try_load("t5small", lambda: _load_seq2seq(T5_SMALL_PATH))
     else:
         log.warning(f"T5-Small weights not found at: {T5_SMALL_PATH}")
 
@@ -110,7 +136,27 @@ async def lifespan(app: FastAPI):
     else:
         log.warning(f"BART-Base weights not found at: {BART_BASE_PATH}")
 
-    # LLaMA last — largest model
+    # ── KFold T5-Small — load each fold that exists ───────────────────────────
+    kfold_base = Path(KFOLD_T5_BASE_PATH)
+    if kfold_base.exists():
+        loaded_folds = []
+        for fold_n in range(1, KFOLD_T5_FOLDS + 1):
+            fold_path = kfold_base / f"fold_{fold_n}"
+            if fold_path.exists():
+                key = f"t5small_fold{fold_n}"
+                _try_load(key, lambda p=str(fold_path): _load_seq2seq(p))
+                if key in models:
+                    loaded_folds.append(key)
+            else:
+                log.warning(f"KFold fold not found: {fold_path}")
+        if loaded_folds:
+            log.info(f"KFold T5-Small folds loaded: {loaded_folds}")
+        else:
+            log.warning(f"No KFold folds loaded from {KFOLD_T5_BASE_PATH}")
+    else:
+        log.warning(f"KFold T5-Small base path not found: {KFOLD_T5_BASE_PATH}")
+
+    # ── LLaMA last — largest model ────────────────────────────────────────────
     if Path(LLAMA_ADAPTER_PATH).exists():
         _try_load("llama", _load_llama)
     else:
@@ -129,7 +175,7 @@ app = FastAPI(title="NL2ASP API", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],   # open for browser access from any machine on network
+    allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -146,6 +192,10 @@ class CNL2ASPRequest(BaseModel):
 class NL2ASPRequest(BaseModel):
     nl: str
     model: str = "llama"
+    max_new_tokens: int = 256
+
+class EnsembleRequest(BaseModel):
+    nl: str
     max_new_tokens: int = 256
 
 
@@ -235,6 +285,11 @@ def _compile_cnl(cnl: str) -> tuple:
         return ("", False)
 
 
+def _get_kfold_keys() -> list:
+    """Return all currently loaded KFold fold keys, sorted."""
+    return sorted(k for k in models if k.startswith("t5small_fold"))
+
+
 # ── Routes ────────────────────────────────────────────────────────────────────
 @app.get("/api/health")
 def health():
@@ -243,6 +298,7 @@ def health():
         "device":        DEVICE,
         "gpu":           torch.cuda.get_device_name(0) if DEVICE == "cuda" else "none",
         "loaded_models": list(models.keys()),
+        "kfold_folds":   _get_kfold_keys(),
     }
 
 
@@ -265,6 +321,58 @@ def nl2asp(req: NL2ASPRequest):
     valid         = _check_syntax(cnl)
     asp, compiled = _compile_cnl(cnl)
     return {"cnl": cnl, "syntax_valid": valid, "asp": asp, "compiled": compiled}
+
+
+@app.post("/api/nl2asp_kfold_ensemble")
+def nl2asp_kfold_ensemble(req: EnsembleRequest):
+    """
+    Run all loaded KFold T5-Small folds and pick the best CNL via majority vote.
+
+    Strategy:
+      1. Collect CNL predictions from every fold.
+      2. Check syntax for each.
+      3. Prefer the most common syntax-valid prediction (majority vote).
+      4. Fall back to most common prediction overall if none are valid.
+      5. Compile the chosen CNL to ASP.
+    """
+    fold_keys = _get_kfold_keys()
+    if not fold_keys:
+        raise HTTPException(400, "No KFold T5-Small folds are loaded.")
+
+    fold_results = []
+    for key in fold_keys:
+        try:
+            cnl   = _predict(key, req.nl, req.max_new_tokens)
+            valid = _check_syntax(cnl)
+        except Exception as e:
+            log.warning(f"Fold {key} inference failed: {e}")
+            cnl, valid = "", False
+        fold_results.append({"fold": key, "cnl": cnl, "syntax_valid": valid})
+
+    valid_preds = [r["cnl"] for r in fold_results if r["syntax_valid"] and r["cnl"]]
+    all_preds   = [r["cnl"] for r in fold_results if r["cnl"]]
+
+    if valid_preds:
+        best_cnl   = Counter(valid_preds).most_common(1)[0][0]
+        cnl_source = "majority_vote_valid"
+    elif all_preds:
+        best_cnl   = Counter(all_preds).most_common(1)[0][0]
+        cnl_source = "majority_vote_all"
+    else:
+        raise HTTPException(500, "All folds returned empty predictions.")
+
+    syntax_valid  = _check_syntax(best_cnl)
+    asp, compiled = _compile_cnl(best_cnl)
+
+    return {
+        "cnl":          best_cnl,
+        "syntax_valid": syntax_valid,
+        "asp":          asp,
+        "compiled":     compiled,
+        "cnl_source":   cnl_source,
+        "folds_used":   len(fold_keys),
+        "fold_details": fold_results,
+    }
 
 
 if __name__ == "__main__":
