@@ -18,7 +18,6 @@ import logging
 import requests
 from pathlib import Path
 from contextlib import asynccontextmanager
-from collections import Counter
 
 import torch
 from fastapi import FastAPI, HTTPException
@@ -41,12 +40,10 @@ else:
 
 log.info(f"Device: {DEVICE}  |  dtype: {DTYPE}")
 
-# ── Weight paths ───────────────────────────────────────────────────────────────
+# ── Weight paths ──────────────────────────────────────────────────────────────
 LLAMA_ADAPTER_PATH = "./llamafinetune"
 T5_SMALL_PATH      = "./t5small_weights"
 BART_BASE_PATH     = "./bartbase_weights"
-
-# KFold T5-Small — contains fold_1 … fold_5 subdirectories
 KFOLD_T5_BASE_PATH = "./Kfold5_t5small"
 KFOLD_T5_FOLDS     = 5
 
@@ -68,42 +65,58 @@ models: dict = {}
 
 
 def _try_load(key: str, loader):
-    import traceback
     try:
         models[key] = loader()
         log.info(f"✓  {key} loaded")
     except Exception as e:
+        import traceback
         log.warning(f"✗  {key} skipped — {e}")
-        log.debug(traceback.format_exc())
+        log.warning(traceback.format_exc())
 
 
 def _patch_tokenizer_config(path: str):
     """
-    Transformers ≥ 4.47 regression: extra_special_tokens saved as a list []
-    causes AttributeError: 'list' object has no attribute 'keys' on load.
-    Patch tokenizer_config.json in-place to convert it to a dict {}.
-    Safe to call multiple times — only writes if the bug is present.
+    Fix transformers ≥4.47 regression: extra_special_tokens saved as [] list
+    instead of {} dict causes AttributeError on load. Patch in-place before loading.
     """
     cfg_path = Path(path) / "tokenizer_config.json"
     if not cfg_path.exists():
         return
-    cfg = json.loads(cfg_path.read_text())
-    if isinstance(cfg.get("extra_special_tokens"), list):
-        log.info(f"Patching extra_special_tokens list→dict in {cfg_path}")
-        cfg["extra_special_tokens"] = {}
-        cfg_path.write_text(json.dumps(cfg, indent=2))
+    try:
+        cfg = json.loads(cfg_path.read_text())
+        if isinstance(cfg.get("added_tokens_decoder"), dict):
+            # Check each token entry's extra_special_tokens
+            changed = False
+            for v in cfg["added_tokens_decoder"].values():
+                if isinstance(v, dict) and isinstance(v.get("extra_special_tokens"), list):
+                    v["extra_special_tokens"] = {}
+                    changed = True
+            # Also top-level extra_special_tokens
+            if isinstance(cfg.get("extra_special_tokens"), list):
+                cfg["extra_special_tokens"] = {}
+                changed = True
+            if changed:
+                cfg_path.write_text(json.dumps(cfg, indent=2))
+                log.info(f"Patching extra_special_tokens list→dict in {cfg_path}")
+    except Exception as e:
+        log.warning(f"Could not patch tokenizer config at {path}: {e}")
 
 
 def _load_llama():
     from peft import AutoPeftModelForCausalLM
     from transformers import AutoTokenizer
     log.info(f"Loading LLaMA adapter from {LLAMA_ADAPTER_PATH} ...")
-    model = AutoPeftModelForCausalLM.from_pretrained(
-        LLAMA_ADAPTER_PATH,
-        device_map="auto",
-        torch_dtype=DTYPE,
-    )
+    dtype_str = "float16" if DEVICE == "cuda" else "float32"
+    try:
+        model = AutoPeftModelForCausalLM.from_pretrained(
+            LLAMA_ADAPTER_PATH, device_map="auto", dtype=dtype_str,
+        )
+    except TypeError:
+        model = AutoPeftModelForCausalLM.from_pretrained(
+            LLAMA_ADAPTER_PATH, device_map="auto", torch_dtype=DTYPE,
+        )
     model.eval()
+    _patch_tokenizer_config(LLAMA_ADAPTER_PATH)
     tokenizer = AutoTokenizer.from_pretrained(LLAMA_ADAPTER_PATH)
     tokenizer.pad_token    = tokenizer.eos_token
     tokenizer.padding_side = "right"
@@ -113,11 +126,15 @@ def _load_llama():
 def _load_seq2seq(path: str):
     from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
     log.info(f"Loading seq2seq from {path} ...")
-    # Fix transformers >=4.47 tokenizer_config regression before loading
     _patch_tokenizer_config(path)
-    model = AutoModelForSeq2SeqLM.from_pretrained(
-        path, torch_dtype=DTYPE
-    ).to(DEVICE)
+    # Pass dtype as string — avoids 'not a string' validation error in
+    # newer transformers that rejects torch.dtype objects in from_pretrained
+    dtype_str = "float16" if DEVICE == "cuda" else "float32"
+    try:
+        model = AutoModelForSeq2SeqLM.from_pretrained(path, dtype=dtype_str).to(DEVICE)
+    except TypeError:
+        # Very old transformers: fall back to torch_dtype keyword
+        model = AutoModelForSeq2SeqLM.from_pretrained(path, torch_dtype=DTYPE).to(DEVICE)
     model.eval()
     tokenizer = AutoTokenizer.from_pretrained(path)
     return {"model": model, "tokenizer": tokenizer, "type": "seq2seq"}
@@ -125,38 +142,34 @@ def _load_seq2seq(path: str):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # ── Original single-weight models ─────────────────────────────────────────
+    # ── T5-Small base ──────────────────────────────────────────────────────────
     if Path(T5_SMALL_PATH).exists():
         _try_load("t5small", lambda: _load_seq2seq(T5_SMALL_PATH))
     else:
         log.warning(f"T5-Small weights not found at: {T5_SMALL_PATH}")
 
+    # ── BART-Base ──────────────────────────────────────────────────────────────
     if Path(BART_BASE_PATH).exists():
         _try_load("bartbase", lambda: _load_seq2seq(BART_BASE_PATH))
     else:
         log.warning(f"BART-Base weights not found at: {BART_BASE_PATH}")
 
-    # ── KFold T5-Small — load each fold that exists ───────────────────────────
-    kfold_base = Path(KFOLD_T5_BASE_PATH)
-    if kfold_base.exists():
-        loaded_folds = []
-        for fold_n in range(1, KFOLD_T5_FOLDS + 1):
-            fold_path = kfold_base / f"fold_{fold_n}"
-            if fold_path.exists():
-                key = f"t5small_fold{fold_n}"
-                _try_load(key, lambda p=str(fold_path): _load_seq2seq(p))
-                if key in models:
-                    loaded_folds.append(key)
-            else:
-                log.warning(f"KFold fold not found: {fold_path}")
-        if loaded_folds:
-            log.info(f"KFold T5-Small folds loaded: {loaded_folds}")
+    # ── KFold T5-Small folds ───────────────────────────────────────────────────
+    kfold_loaded = []
+    for fold_n in range(1, KFOLD_T5_FOLDS + 1):
+        fold_path = Path(KFOLD_T5_BASE_PATH) / f"fold_{fold_n}"
+        if fold_path.exists():
+            key = f"t5small_fold{fold_n}"
+            _try_load(key, lambda p=str(fold_path): _load_seq2seq(p))
+            if key in models:
+                kfold_loaded.append(key)
         else:
-            log.warning(f"No KFold folds loaded from {KFOLD_T5_BASE_PATH}")
-    else:
-        log.warning(f"KFold T5-Small base path not found: {KFOLD_T5_BASE_PATH}")
+            log.warning(f"KFold fold_{fold_n} not found at: {fold_path}")
 
-    # ── LLaMA last — largest model ────────────────────────────────────────────
+    if kfold_loaded:
+        log.info(f"KFold T5-Small folds loaded: {kfold_loaded}")
+
+    # ── LLaMA (largest — load last) ────────────────────────────────────────────
     if Path(LLAMA_ADAPTER_PATH).exists():
         _try_load("llama", _load_llama)
     else:
@@ -194,7 +207,7 @@ class NL2ASPRequest(BaseModel):
     model: str = "llama"
     max_new_tokens: int = 256
 
-class EnsembleRequest(BaseModel):
+class KFoldEnsembleRequest(BaseModel):
     nl: str
     max_new_tokens: int = 256
 
@@ -285,11 +298,6 @@ def _compile_cnl(cnl: str) -> tuple:
         return ("", False)
 
 
-def _get_kfold_keys() -> list:
-    """Return all currently loaded KFold fold keys, sorted."""
-    return sorted(k for k in models if k.startswith("t5small_fold"))
-
-
 # ── Routes ────────────────────────────────────────────────────────────────────
 @app.get("/api/health")
 def health():
@@ -298,7 +306,7 @@ def health():
         "device":        DEVICE,
         "gpu":           torch.cuda.get_device_name(0) if DEVICE == "cuda" else "none",
         "loaded_models": list(models.keys()),
-        "kfold_folds":   _get_kfold_keys(),
+        "kfold_folds":   [k for k in models if k.startswith("t5small_fold")],
     }
 
 
@@ -324,53 +332,45 @@ def nl2asp(req: NL2ASPRequest):
 
 
 @app.post("/api/nl2asp_kfold_ensemble")
-def nl2asp_kfold_ensemble(req: EnsembleRequest):
+def nl2asp_kfold_ensemble(req: KFoldEnsembleRequest):
     """
-    Run all loaded KFold T5-Small folds and pick the best CNL via majority vote.
-
-    Strategy:
-      1. Collect CNL predictions from every fold.
-      2. Check syntax for each.
-      3. Prefer the most common syntax-valid prediction (majority vote).
-      4. Fall back to most common prediction overall if none are valid.
-      5. Compile the chosen CNL to ASP.
+    Run all loaded KFold folds, majority-vote on the best CNL, then compile to ASP.
+    Returns per-fold details so the UI can show which folds agreed.
     """
-    fold_keys = _get_kfold_keys()
+    fold_keys = [k for k in models if k.startswith("t5small_fold")]
     if not fold_keys:
-        raise HTTPException(400, "No KFold T5-Small folds are loaded.")
+        raise HTTPException(400, "No KFold models loaded.")
 
+    # Run all folds
     fold_results = []
-    for key in fold_keys:
+    for key in sorted(fold_keys):
         try:
             cnl   = _predict(key, req.nl, req.max_new_tokens)
             valid = _check_syntax(cnl)
         except Exception as e:
-            log.warning(f"Fold {key} inference failed: {e}")
-            cnl, valid = "", False
+            cnl, valid = f"ERROR: {e}", False
         fold_results.append({"fold": key, "cnl": cnl, "syntax_valid": valid})
 
-    valid_preds = [r["cnl"] for r in fold_results if r["syntax_valid"] and r["cnl"]]
-    all_preds   = [r["cnl"] for r in fold_results if r["cnl"]]
-
-    if valid_preds:
-        best_cnl   = Counter(valid_preds).most_common(1)[0][0]
+    # Majority vote: prefer valid predictions, fall back to any
+    from collections import Counter
+    valid_cnls = [r["cnl"] for r in fold_results if r["syntax_valid"]]
+    if valid_cnls:
+        winner     = Counter(valid_cnls).most_common(1)[0][0]
         cnl_source = "majority_vote_valid"
-    elif all_preds:
-        best_cnl   = Counter(all_preds).most_common(1)[0][0]
-        cnl_source = "majority_vote_all"
     else:
-        raise HTTPException(500, "All folds returned empty predictions.")
+        all_cnls   = [r["cnl"] for r in fold_results]
+        winner     = Counter(all_cnls).most_common(1)[0][0]
+        cnl_source = "majority_vote_all"
 
-    syntax_valid  = _check_syntax(best_cnl)
-    asp, compiled = _compile_cnl(best_cnl)
+    syntax_valid      = _check_syntax(winner)
+    asp, compiled     = _compile_cnl(winner)
 
     return {
-        "cnl":          best_cnl,
+        "cnl":          winner,
         "syntax_valid": syntax_valid,
         "asp":          asp,
         "compiled":     compiled,
         "cnl_source":   cnl_source,
-        "folds_used":   len(fold_keys),
         "fold_details": fold_results,
     }
 
