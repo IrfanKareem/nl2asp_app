@@ -1,6 +1,9 @@
 Kfold5_t5small/
-llamafinetune/
 t5small_weights/
 Kfold5_t5small/
 llamafinetune/
+llamafinetune_HP/
+Qwen3-8Bfinetune/
 t5small_weights/
+t5large_weights/
+t53b_weights/
