@@ -530,9 +530,12 @@
     z-index: 20; box-shadow: 0 1px 4px rgba(0,0,0,0.05);
   }
   .brand { display: flex; align-items: center; gap: 0.6rem; }
-  .brand-logo {
-    height: 36px; width: auto; flex-shrink: 0;
-    object-fit: contain; border-radius: 6px;
+  .brand-icon {
+    width: 32px; height: 32px; border-radius: 9px;
+    background: linear-gradient(135deg, #2563eb 0%, #7c3aed 100%);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 15px; flex-shrink: 0;
+    box-shadow: 0 2px 8px rgba(37,99,235,0.3);
   }
   .brand-name { font-weight: 700; font-size: 0.95rem; color: #0f172a; letter-spacing: -0.02em; }
   .brand-sub  { font-size: 0.58rem; color: #94a3b8; font-family: 'JetBrains Mono', monospace; }
@@ -1070,10 +1073,10 @@
   <!-- Header -->
   <header>
     <div class="brand">
-      <img src="/logo.png" alt="MKMR" class="brand-logo" />
+      <div class="brand-icon">🧠</div>
       <div>
         <div class="brand-name">NL2ASP</div>
-        <div class="brand-sub">NL → CNL → ASP · MKMR</div>
+        <div class="brand-sub">NL → CNL → ASP</div>
       </div>
     </div>
     <div class="hdivider"></div>
