@@ -7,3 +7,20 @@ Qwen3-8Bfinetune/
 t5small_weights/
 t5large_weights/
 t53b_weights/
+final_adapter_3.1-8B-Instruct_r8/
+final_adapter_3.1-8B-Instruct_r16/
+final_adapter_3.1-8B-Instruct_r32/
+final_adapter_Qwen3-8B_r8/
+final_adapter_Qwen3-8B_r16/
+final_adapter_Qwen3-8B_r32/
+final_adapter_Qwen3.5-9B_r8/
+final_adapter_Qwen3.5-9B_r16/
+final_adapter_Qwen3.5-9B_r32/
+ministral8B-2410_r8/
+ministral8B-2410_r16/
+ministral8B-2410_r32/
+old_models/
+README coy.md/
+backups/
+
+
