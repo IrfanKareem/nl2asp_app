@@ -8,14 +8,13 @@ modern light-themed Svelte frontend, multi-model comparison dashboard, and query
 
 ## ✨ What's New (Latest Update)
 
-- ✅ **T5 Models Integrated**: T5-Small (60M), T5-Large (770M), and T5-3B (last trained versions) fully working
-- ⏳ **T5 New Weights In Progress**: Newly trained T5 model weights are being prepared (will be integrated soon)
+- ✅ **T5 Models Now Live**: T5-Small (60M), T5-Large (770M), and T5-3B fully integrated and working with complete training datasets
+- ✅ **Improved Dashboard UI**: Larger limit slider, copy buttons for NL/CNL, editable CNL output in both Direct and Step-by-Step modes
 - ✅ **Dual-Server Architecture**: Separate Qwen3.5 worker for transformers 5.x compatibility
 - ✅ **Modern UI**: Light theme redesign with improved UX
 - ✅ **Dashboard Feature**: Multi-model comparison and batch analysis
 - ✅ **Query History**: Browser-based sessionStorage for recent inputs
-- ✅ **Model Controls**: Load All / Unload All buttons + Cancel button for long operations
-- ✅ **K-fold Preparation**: Commented out for future per-model re-enablement
+- ✅ **Model Controls**: Load All / Unload All buttons + Cancel button for long operations- ✅ **K-fold Preparation**: Commented out for future per-model re-enablement
 
 ---
 
@@ -23,23 +22,34 @@ modern light-themed Svelte frontend, multi-model comparison dashboard, and query
 
 ```
 nl2asp_app/
-├── server.py                 ← FastAPI gateway (processes all models except Qwen3.5-9B)
-├── server_qwen35.py          ← Worker server (handles Qwen3.5-9B inference)
+├── server.py                           ← FastAPI gateway (processes all models except Qwen3.5-9B)
+├── server_qwen35.py                    ← Worker server (handles Qwen3.5-9B inference)
 ├── src/
-│   ├── main.js               ← Svelte entry point
-│   └── App.svelte            ← Modern light-theme UI with dashboard
-├── index.html                ← Frontend entry point
+│   ├── main.js                         ← Svelte entry point
+│   └── App.svelte                      ← Modern light-theme UI with dashboard
+├── index.html                          ← Frontend entry point
 ├── vite.config.js
 ├── package.json
-├── requirements.txt          ← Python dependencies
+├── requirements.txt                    ← Python dependencies
 ├── public/
-│   └── logo.png              ← Application logo
-├── old_models/
-│   ├── t5small_weights/      ← T5-Small (60M) last trained weights
-│   ├── t5large_weights/      ← T5-Large (770M) last trained weights
-│   └── t53b_weights/         ← T5-3B last trained weights
-├── backups/                  ← Source file backups
-└── [LLM adapters]/           ← Qwen, LLaMA, Ministral LoRA weights
+│   └── logo.png                        ← Application logo
+├── t5-3b_Complete_Dataset/             ← T5-3B full dataset (newly trained)
+│   ├── model.safetensors
+│   ├── config.json
+│   └── tokenizer.json
+├── t5large_Complete_Dataset/           ← T5-Large full dataset (newly trained)
+│   ├── model.safetensors
+│   ├── config.json
+│   └── tokenizer.json
+├── t5small_Complete_Dataset/           ← T5-Small full dataset (newly trained)
+│   ├── checkpoint-38000/
+│   │   ├── model.safetensors
+│   │   ├── config.json
+│   │   └── tokenizer.json
+│   └── ...
+├── [LLM adapters]/                     ← Qwen, LLaMA, Ministral LoRA weights
+├── backups/                            ← Source file backups
+└── old_models/                         ← Legacy model storage
 ```
 
 ---
@@ -258,14 +268,13 @@ http://SERVER_IP:5173
 - **Ministral-8B** (3 LoRA ranks)
 
 ### Seq2Seq Models (T5 family, can load independently)
-- **T5-Small** (60M, float32) - full dataset ✓ Last trained version
-- **T5-Large** (770M, float16) - full dataset ✓ Last trained version
-- **T5-3B** (float16) - full dataset ✓ Last trained version
+- **T5-Small** (60M, float32) - complete dataset ✅ Fully working
+- **T5-Large** (770M, float16) - complete dataset ✅ Fully working  
+- **T5-3B** (3B, float16) - complete dataset ✅ Fully working
 
-> **Current Status**: Using last trained T5 model weights from `old_models/`
-> **In Progress**: New T5 model weights are being trained and will be integrated when ready.
+> **Status**: All T5 models are now fully integrated with trained weights from complete datasets.
+> Located at `/home/manuel/nl2asp_app/t5-{small,large,3b}_Complete_Dataset/`
 > K-fold ensemble variants are commented out and will be re-enabled per-model in future updates.
-> All T5 models use tokenizer.json format for compatibility.
 
 ---
 
@@ -296,10 +305,13 @@ curl -X POST http://localhost:8000/api/nl2asp \
 - Type natural language, select model
 - Choose pipeline: Step-by-step (NL→CNL→ASP) or Direct (NL→ASP)
 - View CNL syntax validation and ASP compilation results
-- Copy results to clipboard
+- **Copy NL button** for quick clipboard access
+- **Edit CNL** - toggle edit mode to manually refine CNL output before compilation
+- **Copy CNL** - copy refined CNL to clipboard after editing
 
 ### **Batch Mode**
 - Upload JSON: `{"data_dict": [{"NL_V2": "...", "CNL_V2": "...", "ASP": "..."}]}`
+- **Improved limit slider** - easily set batch size limit with visual feedback (`current / total` display)
 - Processes all records with live progress bar
 - Shows syntax accuracy % and compilation rate
 - Download results as CSV
@@ -336,7 +348,7 @@ sudo ufw allow 8005   # Qwen3.5 worker (optional if running locally)
 | `ModuleNotFoundError: torch` | Ensure correct environment is active. Reinstall from nightly ROCm index. |
 | `torch.cuda.is_available() = False` | Check `rocm-smi --version`. May need ROCm update. |
 | Qwen3.5 models show "worker offline" | Terminal 1 (server_qwen35.py) not running. Start it in llm_peft_qwen35 environment. |
-| "'list' object has no attribute 'keys'" (T5 loading) | Model files corrupted or in old_models/. Check file integrity. |
+| T5 models fail to load | Verify tokenizer_config.json has been fixed (extra_special_tokens field removed). |
 | `No module named 'transformers'` in worker (llm_peft_qwen35) | Install with `pip install transformers==5.1.0` |
 | Port 8000/5173 already in use | Kill background process: `sudo lsof -i :8000` then `kill -9 <PID>` |
 | `package.json not found` | Run npm commands inside `/home/manuel/nl2asp_app` directory |
