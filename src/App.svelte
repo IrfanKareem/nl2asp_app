@@ -8,6 +8,7 @@
 
   let nlInput = "";
   let cnlOutput = "";
+  let cnlEditMode = false;
   let aspOutput = "";
   let cnlStatus = "";
   let aspStatus = "";
@@ -228,7 +229,8 @@
 
   async function loadAll() {
     try {
-      errorMsg = "⏳ Loading all models into VRAM... this may take several minutes.";
+      errorMsg =
+        "⏳ Loading all models into VRAM... this may take several minutes.";
       const existingModels = Object.entries(availableModels)
         .filter(([, m]) => m.exists && m.group === "llm")
         .map(([key]) => key);
@@ -842,7 +844,9 @@
           <button
             class="unload-all-btn"
             on:click={loadAll}
-            disabled={loadedKeys.length === Object.entries(availableModels).filter(([,m])=>m.exists).length}
+            disabled={loadedKeys.length ===
+              Object.entries(availableModels).filter(([, m]) => m.exists)
+                .length}
             style="background:#ecfdf5; color:#059669; border-color:#a7f3d0; flex:1"
           >
             ⬆ Load All
@@ -871,7 +875,8 @@
                 style="display:inline-block; width:14px; height:14px; border:2px solid rgba(245,158,11,0.2); border-top-color:#f59e0b; border-radius:50%; animation:spin 0.65s linear infinite; flex-shrink:0"
               ></span>
               <span style="flex:1">
-                Loading {selectedMeta.label ?? selectedModel} into VRAM — this may take 1–3 minutes for 8B models…
+                Loading {selectedMeta.label ?? selectedModel} into VRAM — this may
+                take 1–3 minutes for 8B models…
               </span>
               <button
                 class="btn btn-danger"
@@ -930,6 +935,16 @@
                     ? "⚡ NL → ASP"
                     : "⚡ Full Pipeline"}
                 </button>
+                {#if nlInput}
+                  <button
+                    class="btn-copy"
+                    class:copied={copiedNL}
+                    on:click={() => copyText(nlInput, "nl")}
+                  >
+                    {copiedNL ? "✓" : "📋"}
+                    {copiedNL ? "Copied" : "Copy NL"}
+                  </button>
+                {/if}
                 {#if nlInput || cnlOutput || aspOutput}
                   <button class="btn btn-secondary" on:click={reset}
                     >✕ Clear</button
@@ -958,7 +973,7 @@
                   {/if}
                 </span>
                 <div class="row">
-                  {#if pipelineMode === "stepwise" && cnlOutput}
+                  {#if pipelineMode === "stepwise" && cnlOutput && !cnlEditMode}
                     <button
                       class="btn btn-success"
                       on:click={runCNL2ASP}
@@ -969,14 +984,35 @@
                     </button>
                   {/if}
                   {#if cnlOutput}
-                    <button
-                      class="btn-copy"
-                      class:copied={copiedCNL}
-                      on:click={() => copyText(cnlOutput, "cnl")}
-                    >
-                      {copiedCNL ? "✓" : "📋"}
-                      {copiedCNL ? "Copied" : "Copy"}
-                    </button>
+                    {#if cnlEditMode}
+                      <button
+                        class="btn btn-success"
+                        on:click={() => (cnlEditMode = false)}
+                      >
+                        ✓ Save
+                      </button>
+                      <button
+                        class="btn btn-secondary"
+                        on:click={() => (cnlEditMode = false)}
+                      >
+                        ✕ Cancel
+                      </button>
+                    {:else}
+                      <button
+                        class="btn btn-secondary"
+                        on:click={() => (cnlEditMode = true)}
+                      >
+                        ✏️ Edit
+                      </button>
+                      <button
+                        class="btn-copy"
+                        class:copied={copiedCNL}
+                        on:click={() => copyText(cnlOutput, "cnl")}
+                      >
+                        {copiedCNL ? "✓" : "📋"}
+                        {copiedCNL ? "Copied" : "Copy CNL"}
+                      </button>
+                    {/if}
                   {/if}
                 </div>
               </div>
@@ -984,7 +1020,12 @@
                 {#if loadingNL2CNL || loadingDirect}
                   <p class="ph">Generating CNL…</p>
                 {:else if cnlOutput}
-                  <div class="code-out cnl-color">{cnlOutput}</div>
+                  {#if cnlEditMode}
+                    <textarea bind:value={cnlOutput} class="cnl-textarea"
+                    ></textarea>
+                  {:else}
+                    <div class="code-out cnl-color">{cnlOutput}</div>
+                  {/if}
                 {/if}
               </div>
             </div>
@@ -1223,19 +1264,19 @@
                   {/if}
                 </div>
                 {#if dashRecords.length}
-                  <div
-                    style="display:flex; align-items:center; gap:0.5rem; font-size:0.72rem; color:#64748b"
-                  >
-                    <label>
+                  <div class="limit-control">
+                    <label class="limit-label">
                       Limit to
                       <input
                         type="range"
                         bind:value={dashBatchLimit}
                         min="0"
                         max={dashRecords.length}
-                        style="width:60px; vertical-align:middle"
+                        class="limit-slider"
                       />
-                      {dashBatchLimit === 0 ? "all" : dashBatchLimit}
+                      <span class="limit-value">
+                        {dashBatchLimit === 0 ? "all" : dashBatchLimit} / {dashRecords.length}
+                      </span>
                     </label>
                   </div>
                 {/if}
@@ -1930,6 +1971,86 @@
     font-style: italic;
     font-size: 0.75rem;
     font-family: "JetBrains Mono", monospace;
+  }
+
+  /* ── CNL Edit Mode ── */
+  .cnl-textarea {
+    width: 100%;
+    background: none;
+    border: none;
+    outline: none;
+    color: #5b21b6;
+    font-family: "JetBrains Mono", monospace;
+    font-size: 0.82rem;
+    line-height: 1.8;
+    resize: vertical;
+    min-height: 120px;
+  }
+
+  /* ── Limit Slider ── */
+  .limit-control {
+    display: flex;
+    align-items: center;
+    gap: 0.8rem;
+    font-size: 0.72rem;
+    color: #64748b;
+  }
+  .limit-label {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    cursor: pointer;
+  }
+  .limit-slider {
+    width: 140px;
+    height: 6px;
+    border-radius: 3px;
+    background: linear-gradient(to right, #2563eb 0%, #7c3aed 100%);
+    outline: none;
+    -webkit-appearance: none;
+    appearance: none;
+  }
+  .limit-slider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    background: #2563eb;
+    cursor: pointer;
+    border: 2px solid #ffffff;
+    box-shadow: 0 2px 6px rgba(37, 99, 235, 0.4);
+    transition: all 0.2s;
+  }
+  .limit-slider::-webkit-slider-thumb:hover {
+    background: #1d4ed8;
+    box-shadow: 0 3px 8px rgba(37, 99, 235, 0.6);
+    transform: scale(1.1);
+  }
+  .limit-slider::-moz-range-thumb {
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    background: #2563eb;
+    cursor: pointer;
+    border: 2px solid #ffffff;
+    box-shadow: 0 2px 6px rgba(37, 99, 235, 0.4);
+    transition: all 0.2s;
+  }
+  .limit-slider::-moz-range-thumb:hover {
+    background: #1d4ed8;
+    box-shadow: 0 3px 8px rgba(37, 99, 235, 0.6);
+    transform: scale(1.1);
+  }
+  .limit-slider::-moz-range-track {
+    background: none;
+    border: none;
+  }
+  .limit-value {
+    font-weight: 600;
+    color: #2563eb;
+    font-family: "JetBrains Mono", monospace;
+    min-width: 50px;
   }
 
   /* ── Buttons ── */

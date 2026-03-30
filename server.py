@@ -169,7 +169,7 @@ MODEL_REGISTRY: dict = {
     "t5small_full": {
         "label": "T5-Small (Full dataset)", "tag": "60M full", "icon": "🔬",
         "kind": "seq2seq", "dtype": "float32",
-        "path": "/home/manuel/nl2asp_app/old_models/t5small_weights",   "group": "t5small",
+        "path": "/home/manuel/nl2asp_app/t5small_Complete_Dataset/checkpoint-38000",   "group": "t5small",
     },
     # DISABLED K-FOLD VARIANTS — To be re-enabled per-model in future updates
     # "t5small_k1":   {
@@ -203,7 +203,7 @@ MODEL_REGISTRY: dict = {
     "t5large_full": {
         "label": "T5-Large (Full dataset)", "tag": "770M full", "icon": "📊",
         "kind": "seq2seq", "dtype": "float16",
-        "path": "/home/manuel/nl2asp_app/old_models/t5large_weights",   "group": "t5large",
+        "path": "/home/manuel/nl2asp_app/t5large_Complete_Dataset",   "group": "t5large",
     },
 
     # ── T5-3B  (full dataset only) ────────────────────────────
@@ -211,7 +211,7 @@ MODEL_REGISTRY: dict = {
     "t5_3b_full":   {
         "label": "T5-3B (Full dataset)",    "tag": "3B full",   "icon": "🧬",
         "kind": "seq2seq", "dtype": "float16",
-        "path": "/home/manuel/nl2asp_app/old_models/t53b_weights",      "group": "t5_3b",
+        "path": "/home/manuel/nl2asp_app/t5-3b_Complete_Dataset",      "group": "t5_3b",
     },
 }
 
@@ -352,13 +352,33 @@ def _load_peft_causal(path: str, dtype) -> dict:
     return {"model": model, "tokenizer": tok, "input_device": input_device}
 
 
+# def _load_seq2seq(path: str, dtype) -> dict:
+#     from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
+#     log.info("Loading seq2seq model: %s", path)
+#     model = AutoModelForSeq2SeqLM.from_pretrained(path, torch_dtype=dtype).to(DEVICE)
+#     model.eval()
+#     tok = AutoTokenizer.from_pretrained(path)
+#     return {"model": model, "tokenizer": tok}
+
 def _load_seq2seq(path: str, dtype) -> dict:
     from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
+    import traceback
     log.info("Loading seq2seq model: %s", path)
-    model = AutoModelForSeq2SeqLM.from_pretrained(path, torch_dtype=dtype).to(DEVICE)
-    model.eval()
-    tok = AutoTokenizer.from_pretrained(path)
-    return {"model": model, "tokenizer": tok}
+    try:
+        log.info("  Loading model weights from %s", path)
+        model = AutoModelForSeq2SeqLM.from_pretrained(path, torch_dtype=dtype).to(DEVICE)
+        log.info("  Model loaded, evaluating...")
+        model.eval()
+        log.info("  Loading tokenizer...")
+        tok = AutoTokenizer.from_pretrained(path)
+        log.info("  Tokenizer loaded successfully")
+        return {"model": model, "tokenizer": tok}
+    except Exception as e:
+        log.error("Failed to load seq2seq model from %s", path)
+        log.error("Error type: %s", type(e).__name__)
+        log.error("Error message: %s", str(e))
+        log.error("Full traceback:\n%s", traceback.format_exc())
+        raise
 
 
 # ════════════════════════════════════════════════════════════════════════════════

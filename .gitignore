@@ -22,5 +22,11 @@ ministral8B-2410_r32/
 old_models/
 README coy.md/
 backups/
+t5-3b_Complete_Dataset/
+t5large_Complete_Dataset/
+t5small_Complete_Dataset/
+t5-3b_Complete_Dataset.zip/
+t5large_Complete_Dataset.zip/
+t5small_Complete_Dataset.zip/
 
 
